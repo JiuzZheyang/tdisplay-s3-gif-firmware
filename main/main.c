@@ -17,7 +17,7 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_st7789.h>
-#include <esp_lcd_i80_bus.h>
+#include <esp_lcd_io_i80.h>
 
 static const char* TAG = "GIF";
 
@@ -33,14 +33,12 @@ static const char* TAG = "GIF";
 
 #define PIN_BOOT       0
 
-// Display: 原生 170x320，代码里 SWAP_XY 旋转为横屏 320x170
-#define DISP_W_NATIVE  170   // 原始宽度
-#define DISP_H_NATIVE  320   // 原始高度
-#define DISP_W_SWAPPED 320  // SWAP_XY 后的帧缓冲宽度
-#define DISP_H_SWAPPED 170  // SWAP_XY 后的帧缓冲高度
+// Display: 原生 170x320，SWAP_XY 旋转后帧缓冲 320x170
+#define DISP_W_NATIVE  170
+#define DISP_H_NATIVE  320
 #define FRAME_SIZE (DISP_W_NATIVE * DISP_H_NATIVE * 2)   // 108800 bytes
 
-#define SPIFFS_OFFSET  0x500000   // SPIFFS partition at 5MB offset (4MB total)
+#define SPIFFS_OFFSET  0x500000
 
 static esp_lcd_panel_io_handle_t io_handle = NULL;
 static esp_lcd_panel_handle_t panel_handle = NULL;
@@ -52,46 +50,51 @@ typedef struct {
     uint16_t delay_ms;
 } gif_meta_t;
 
-// 硬件初始化 - 来源: xiaozhi-esp32 Initialize1in9Bus()
+// GPIO 批量配置辅助
+static void gpio_config_output(uint32_t pin_mask)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = pin_mask,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&cfg);
+}
+
+// ===== 硬件初始化 =====
 static void lcd_hardware_init(void)
 {
     // PWR enable (GPIO15)
-    gpio_config_t pwr_cfg = {
-        .pin_bit_mask = 1ULL << PIN_LCD_PWR,
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&pwr_cfg);
+    gpio_config_output(1ULL << PIN_LCD_PWR);
     gpio_set_level((gpio_num_t)PIN_LCD_PWR, 1);
 
-    // RD pin = HIGH (required)
-    gpio_config_t rd_cfg = {
-        .pin_bit_mask = 1ULL << PIN_LCD_RD,
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&rd_cfg);
+    // RD pin = HIGH (required by official code)
+    gpio_config_output(1ULL << PIN_LCD_RD);
     gpio_set_level((gpio_num_t)PIN_LCD_RD, 1);
 
     // Backlight off initially
-    gpio_config_t bl_cfg = {
-        .pin_bit_mask = 1ULL << PIN_LCD_BL,
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&bl_cfg);
+    gpio_config_output(1ULL << PIN_LCD_BL);
     gpio_set_level((gpio_num_t)PIN_LCD_BL, 0);
+
+    ESP_LOGI(TAG, "GPIO hardware init done");
 }
 
-// I80 总线初始化 - 来源: xiaozhi-esp32
+// ===== I80 总线初始化 =====
 static void lcd_i80_bus_init(void)
 {
+    // Data pins D0-D7
+    gpio_num_t data_gpios[8] = {
+        (gpio_num_t)39, (gpio_num_t)40, (gpio_num_t)41, (gpio_num_t)42,
+        (gpio_num_t)45, (gpio_num_t)46, (gpio_num_t)47, (gpio_num_t)48
+    };
+
     esp_lcd_i80_bus_config_t bus_cfg = {
-        .dc_gpio_num = PIN_LCD_DC,
-        .wr_gpio_num = PIN_LCD_WR,
+        .dc_gpio_num = (gpio_num_t)PIN_LCD_DC,
+        .wr_gpio_num = (gpio_num_t)PIN_LCD_WR,
         .clk_src = LCD_CLK_SRC_DEFAULT,
         .data_gpio_nums = {39, 40, 41, 42, 45, 46, 47, 48},
         .bus_width = 8,
         .max_transfer_bytes = FRAME_SIZE,
-        .psram_trans_align = 64,
-        .sram_trans_align = 4,
+        .dma_burst_size = 64,
     };
 
     esp_lcd_i80_bus_handle_t i80_bus = NULL;
@@ -99,8 +102,8 @@ static void lcd_i80_bus_init(void)
 
     // Panel IO for I80
     esp_lcd_panel_io_i80_config_t io_cfg = {
-        .cs_gpio_num = PIN_LCD_CS,
-        .pclk_hz = 10 * 1000 * 1000,      // 10MHz
+        .cs_gpio_num = (gpio_num_t)PIN_LCD_CS,
+        .pclk_hz = 10 * 1000 * 1000,   // 10MHz
         .trans_queue_depth = 10,
         .on_color_trans_done = NULL,
         .user_ctx = NULL,
@@ -115,15 +118,16 @@ static void lcd_i80_bus_init(void)
     };
 
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i80(i80_bus, &io_cfg, &io_handle));
+    ESP_LOGI(TAG, "I80 bus init done");
 }
 
-// ST7789 完整初始化序列 - 来源: xiaozhi-esp32 official LilyGo sequence
+// ===== ST7789 完整初始化序列 (来自 LilyGo 官方) =====
 static void st7789_init_sequence(void)
 {
     esp_lcd_panel_io_tx_param(io_handle, 0x11, NULL, 0);   // SLPOUT
     vTaskDelay(pdMS_TO_TICKS(120));
 
-    esp_lcd_panel_io_tx_param(io_handle, 0x3A, (uint8_t[]){0x05}, 1);  // COLMOD=RGB565 (NOT 0x55!)
+    esp_lcd_panel_io_tx_param(io_handle, 0x3A, (uint8_t[]){0x05}, 1);  // COLMOD=RGB565
 
     esp_lcd_panel_io_tx_param(io_handle, 0xB2, (uint8_t[]){0x0B, 0x0B, 0x00, 0x33, 0x33}, 5);  // PORCTRL
     esp_lcd_panel_io_tx_param(io_handle, 0xB7, (uint8_t[]){0x75}, 1);  // GCTRL
@@ -135,20 +139,20 @@ static void st7789_init_sequence(void)
     esp_lcd_panel_io_tx_param(io_handle, 0xD0, (uint8_t[]){0xA7}, 1);  // PWCTRL1
     esp_lcd_panel_io_tx_param(io_handle, 0xD0, (uint8_t[]){0xA4, 0xA1}, 2);  // PWCTRL1
     esp_lcd_panel_io_tx_param(io_handle, 0xD6, (uint8_t[]){0xA1}, 1);  // D6
-    esp_lcd_panel_io_tx_param(io_handle, 0xE0,
-        (uint8_t[]){0xF0, 0x05, 0x0A, 0x06, 0x06, 0x03, 0x2B, 0x32, 0x43, 0x36, 0x11, 0x10, 0x2B, 0x32}, 14);  // Positive Gamma
-    esp_lcd_panel_io_tx_param(io_handle, 0xE1,
-        (uint8_t[]){0xF0, 0x08, 0x0C, 0x0B, 0x09, 0x24, 0x2B, 0x22, 0x43, 0x38, 0x15, 0x16, 0x2F, 0x37}, 14);  // Negative Gamma
+    esp_lcd_panel_io_tx_param(io_handle, 0xE0,  // Positive Gamma
+        (uint8_t[]){0xF0, 0x05, 0x0A, 0x06, 0x06, 0x03, 0x2B, 0x32, 0x43, 0x36, 0x11, 0x10, 0x2B, 0x32}, 14);
+    esp_lcd_panel_io_tx_param(io_handle, 0xE1,  // Negative Gamma
+        (uint8_t[]){0xF0, 0x08, 0x0C, 0x0B, 0x09, 0x24, 0x2B, 0x22, 0x43, 0x38, 0x15, 0x16, 0x2F, 0x37}, 14);
 }
 
-// 面板完整初始化 - 来源: xiaozhi-esp32
+// ===== 面板初始化 =====
 static void lcd_panel_init(void)
 {
     lcd_i80_bus_init();
 
     // Panel device config
     esp_lcd_panel_dev_config_t dev_cfg = {
-        .reset_gpio_num = PIN_LCD_RST,
+        .reset_gpio_num = (gpio_num_t)PIN_LCD_RST,
         .color_space = ESP_LCD_COLOR_SPACE_RGB,
         .bits_per_pixel = 16,
         .vendor_config = NULL,
@@ -163,17 +167,13 @@ static void lcd_panel_init(void)
     // Init panel
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
 
-    // 关键：颜色反转 (ST7789 必须)
-    esp_lcd_panel_invert_color(panel_handle, true);
+    // 关键配置
+    esp_lcd_panel_invert_color(panel_handle, true);   // ST7789 必须颜色反转
+    esp_lcd_panel_swap_xy(panel_handle, true);       // 竖屏→横屏旋转
+    esp_lcd_panel_mirror(panel_handle, false, true); // USB在左边: Y镜像
 
-    // SWAP_XY: 竖屏(170x320) → 横屏(320x170)
-    esp_lcd_panel_swap_xy(panel_handle, true);
-
-    // USB 在左边: mirror Y=true, mirror X=false
-    esp_lcd_panel_mirror(panel_handle, false, true);
-
-    // Set gap (偏移)
-    esp_lcd_panel_set_gap(panel_handle, 35, 0);  // X offset=35, Y offset=0
+    // 偏移量 (X=35 让内容居中显示)
+    esp_lcd_panel_set_gap(panel_handle, 35, 0);
 
     // 执行 official ST7789 init sequence
     st7789_init_sequence();
@@ -184,60 +184,20 @@ static void lcd_panel_init(void)
     // Turn on backlight
     gpio_set_level((gpio_num_t)PIN_LCD_BL, 1);
 
-    ESP_LOGI(TAG, "ST7789 I80 panel init OK (320x170 landscape)");
+    ESP_LOGI(TAG, "ST7789 panel init OK (320x170 landscape)");
 }
 
-// 绘制帧: 数据是170x320，转横屏后填入320x170
-static void lcd_draw_frame(const uint16_t* rgb565_native)
+// ===== 绘制帧 =====
+// SWAP_XY=true: 帧缓冲 320x170，源数据是原生 170x320
+// draw_bitmap 的参数应该是原始坐标(170x320)，panel内部处理旋转
+static void lcd_draw_frame(const uint16_t* rgb565)
 {
-    // SWAP_XY 后: 帧缓冲 = 320x170
-    // 数据来自 GIF 文件，是原生 170x320 格式
-    // 需要转置: 源(x,y) → 目标(y,x)
-    static uint16_t fb[DISP_W_SWAPPED * DISP_H_SWAPPED] __attribute__((section(".psram_array")));
-
-    for (int sy = 0; sy < DISP_H_NATIVE; sy++) {
-        for (int sx = 0; sx < DISP_W_NATIVE; sx++) {
-            // 转置: (sx, sy) → (sy, sx)
-            fb[sy * DISP_W_SWAPPED + sx] = rgb565_native[sy * DISP_W_NATIVE + sx];
-        }
-    }
-
-    // 填满 320x170，X=35 偏移量由 set_gap 处理
-    // 实际显示区域在帧缓冲的 [35..204] x [0..169]
-    // 先清黑边: 填满整个 320x170
-    for (int y = 0; y < DISP_H_SWAPPED; y++) {
-        for (int x = 0; x < DISP_W_SWAPPED; x++) {
-            // 清[0..34]和[205..319]的黑边区域(这些是黑边，偏移35正好让显示区对准)
-        }
-    }
-
-    // 绘制到 320x170 的帧缓冲
-    // esp_lcd_panel_draw_bitmap(panel, x, y, bitmap, w, h) 目标坐标(x,y)为列,行
-    esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, fb, DISP_W_SWAPPED, DISP_H_SWAPPED);
-}
-
-// 简化版: 直接用原生坐标绘制 (panel内部处理SWAP_XY)
-static void lcd_draw_frame_direct(const uint16_t* rgb565)
-{
-    // 使用原生 170x320 坐标，panel 的 swap_xy 会自动处理旋转
-    // 帧缓冲总大小 = 320x170 = 54,400 pixels = 108,800 bytes
-    // 这里我们直接在帧缓冲对应位置写入
-
-    // 其实更好的方式是：使用 esp_lcd_panel_set_window 设置窗口，
-    // 然后直接写GRAM。但 esp_lcd_panel_draw_bitmap 更简单。
-    //
-    // 正确做法：panel_swap_xy=true 后，draw_bitmap 的 w/h 应该是交换后的
-    // 即 draw_bitmap(panel, x, y, bitmap, 320, 170)
-    // 面板会自动把数据映射到正确的物理像素
-
-    // 一次性绘制整帧
     esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, rgb565, DISP_W_NATIVE, DISP_H_NATIVE);
 }
 
 static void lcd_clear(void)
 {
-    static uint16_t black[DISP_W_NATIVE];
-    memset(black, 0, sizeof(black));
+    static uint16_t black[DISP_W_NATIVE] = {0};
     for (int y = 0; y < DISP_H_NATIVE; y++) {
         esp_lcd_panel_draw_bitmap(panel_handle, 0, y, black, DISP_W_NATIVE, 1);
     }
@@ -269,16 +229,13 @@ void app_main(void)
     printf("  T-Display-S3 1.9\" GIF Player\n");
     printf("  ESP-IDF 5.5 + ST7789 I80 Parallel\n");
     printf("  Pins: DC=7 WR=8 CS=6 RST=5\n");
-    printf("        BL=38 PWR=15 BOOT=0\n");
-    printf("  Bus: I80 8-bit (GPIO 39-48)\n");
+    printf("        BL=38 PWR=15 RD=9\n");
+    printf("  Data: GPIO 39-42, 45-48 (D0-D7)\n");
     printf("====================================\n");
 
     gpio_set_direction((gpio_num_t)PIN_BOOT, GPIO_MODE_INPUT);
 
-    // 硬件初始化
     lcd_hardware_init();
-
-    // 面板初始化 (I80 总线 + ST7789)
     lcd_panel_init();
 
     // 分配帧缓冲 (PSRAM)
@@ -349,7 +306,7 @@ void app_main(void)
                 ESP_LOGE(TAG, "Frame read error idx=%d", frame_idx);
                 break;
             }
-            lcd_draw_frame_direct((uint16_t*)frame_buf);
+            lcd_draw_frame((uint16_t*)frame_buf);
             last_frame = now;
         }
 
