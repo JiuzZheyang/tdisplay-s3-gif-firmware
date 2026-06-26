@@ -46,6 +46,8 @@ static const char* TAG = "GIF";
 static esp_lcd_panel_io_handle_t io_handle = NULL;
 static esp_lcd_panel_handle_t panel_handle = NULL;
 
+static void enter_deep_sleep(void);
+
 typedef struct {
     uint16_t w;
     uint16_t h;
