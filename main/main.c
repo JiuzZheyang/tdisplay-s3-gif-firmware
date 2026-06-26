@@ -32,7 +32,7 @@ static const char* TAG = "GIF";
 #define PIN_LCD_WR     8
 #define PIN_LCD_RD     9
 #define PIN_LCD_RST    5
-#define PIN_LCD_BL    38
+#define PIN_LCD_BL     18  // Backlight (ESP32-S3 has no GPIO38, use GPIO18)
 #define PIN_LCD_PWR   15
 #define PIN_BOOT       0
 
