@@ -20,8 +20,6 @@ jobs:
           target: 'esp32s3'
           command: |
             idf.py set-target esp32s3
-            sed -i 's/CONFIG_ESPTOOLPY_FLASH_SIZE_4MB=y/#CONFIG_ESPTOOLPY_FLASH_SIZE_4MB=y\nCONFIG_ESPTOOLPY_FLASH_SIZE_8MB=y/' build/sdkconfig
-            sed -i 's/CONFIG_ESPTOOLPY_FLASH_SIZE_2MB=y/#CONFIG_ESPTOOLPY_FLASH_SIZE_2MB=y\nCONFIG_ESPTOOLPY_FLASH_SIZE_8MB=y/' build/sdkconfig
             idf.py build
 
       - name: Upload firmware artifact
