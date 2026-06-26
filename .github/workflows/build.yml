@@ -20,9 +20,7 @@ jobs:
           target: 'esp32s3'
           command: |
             idf.py set-target esp32s3
-            # Override flash size from 2MB to 8MB in sdkconfig
-            # The correct kconfig symbol is ESPTOOLPY_FLASHSIZE (value) not ESPTOOLPY_FLASH_SIZE_8MB (bool)
-            sed -i 's/^CONFIG_ESPTOOLPY_FLASHSIZE=.*/CONFIG_ESPTOOLPY_FLASHSIZE=8MB/' build/sdkconfig
+            sed -i 's/CONFIG_ESPTOOLPY_FLASHSIZE_[0-9MB]*=y/CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y/' build/sdkconfig
             idf.py build
 
       - name: Upload firmware artifact
