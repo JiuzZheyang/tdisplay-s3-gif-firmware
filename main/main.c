@@ -14,7 +14,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_sleep.h"
-#include "esp_lcd.h"
+#include <esp_lcd_panel_ops.h>
+#include <esp_lcd_panel_vendor.h>
+#include <esp_lcd_io_i80.h>
 #include "esp_spiffs.h"
 
 #include <esp_lcd_panel_ops.h>
