@@ -20,7 +20,7 @@ jobs:
           target: 'esp32s3'
           command: |
             idf.py set-target esp32s3
-            idf.py -DSDKCONFIG_DEFAULTS=sdkconfig.defaults build
+            idf.py -DESPTOOLPY_FLASH_SIZE_8MB build
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
