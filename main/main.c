@@ -192,14 +192,14 @@ static void lcd_panel_init(void)
 // draw_bitmap 的参数应该是原始坐标(170x320)，panel内部处理旋转
 static void lcd_draw_frame(const uint16_t* rgb565)
 {
-    esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, rgb565, DISP_W_NATIVE, DISP_H_NATIVE);
+    esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, DISP_W_NATIVE, DISP_H_NATIVE, rgb565);
 }
 
 static void lcd_clear(void)
 {
     static uint16_t black[DISP_W_NATIVE] = {0};
     for (int y = 0; y < DISP_H_NATIVE; y++) {
-        esp_lcd_panel_draw_bitmap(panel_handle, 0, y, black, DISP_W_NATIVE, 1);
+        esp_lcd_panel_draw_bitmap(panel_handle, 0, y, DISP_W_NATIVE, y + 1, black);
     }
 }
 
